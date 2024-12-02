@@ -1,0 +1,492 @@
+/*
+  The culmination of all the previous robot sketches, this sketch allows the user to control the function of the robot
+  by pressing different numbers on the IR remote control. The robot can work in manual RC mode, "victory lap" mode,
+  line following mode, and obstacle avoidance mode. Each mode is contained within its own function, and all the functions
+  are chosen by a switch case with enumarated values. The program makes extensive use of millis() timers in order to
+  avoid blocking code, which would otherwise interfere with the switching of modes. The program is also tailored to work
+  with a panasonic remote controller, which offers many more buttons for convenience and customization.
+
+  To function, this sketch requires the external libraries "IRremote.hpp" by shirriff, and "Adafruit_NeoPixel" by adafruit
+*/
+
+#include <Servo.h>
+
+Servo servo; // create a servo object using the keyword "Servo" from the library.
+
+#include <Adafruit_NeoPixel.h>
+#include <Arduino.h>
+
+#define PIN 4 // pin for sending command to the neopixel 
+
+#define NUMPIXELS 1 // the amount of RGB pixels in the neopixel LED strip. In this case, it's just 1 pixel, so it's more of an indicator light than an LED strip.
+
+// When setting up the NeoPixel object with the library, we tell it how many pixels, and which pin to use to send signals.
+Adafruit_NeoPixel rgbPixel(NUMPIXELS, PIN, NEO_GRB + NEO_KHZ800);
+
+// Specify which protocol(s) should be used for decoding. If no protocol is defined, all protocols (except Bang&Olufsen) are active. This must be done before the #include <IRremote.hpp>
+//#define DECODE_NEC          // Includes Apple and Onkyo. To enable all protocols , just comment/disable this line.
+#define DECODE_PANASONIC    // alias for DECODE_KASEIKYO
+
+// This include defines the actual pin number for pins like IR_RECEIVE_PIN, IR_SEND_PIN for many different boards and architectures
+#include "PinDefinitionsAndMore.h"
+#include <IRremote.hpp> // include the library
+
+
+
+int comm; // store the decoded command in a variable so that the full name doesn't need to be typed every time.
+// the library takes care of actually decoding the signal value.
+
+enum robotModes { // use enumerate to contextualize the modes of the robot, so that we do not need to use integers like 0, 1, 2 etc
+MANUAL,
+LAP, 
+LINE, 
+OBSTACLE,
+LINE_OBSTACLE 
+};
+
+enum evasionDecisions { // use another enumerate to give names to the different decisions that the robot can make when avoiding an obstacle
+  NONE,
+  LEFT,
+  RIGHT,
+  UTURN,
+  DECIDING // a temporary decision that serves to let the robot know that it is executing an if statement for the first time within the non-blocking decision-making process
+};
+
+int mode = MANUAL; // store the current mode of the robot
+
+long lastSignalTime = 0; // for shutting down the motors in IR remote mode if there is no signal received for at least 150ms
+long speedDebounce = 0; // for preventing the speed change from being activated more than once every 250ms, even if the speed change button is held down
+int motorSpeed = 125; // speed control for the motors. This can be raised or lowered by the IR remote signal, independant of which mode the robot is in.
+
+const int stby = 3;
+const int pwmA = 5; // channel A is the right motors
+const int pwmB = 6; // channel B is the left motors
+const int inA = 7;
+const int inB = 8;
+
+const int rightPin = A0; // analog inputs for the line tracking sensor
+const int middlePin = A1;
+const int leftPin = A2;
+
+const int echo = 12;
+const int trig = 13;
+const int threshold = 30; // the minimum distance in cm before the robot considers itself to be detecting an obstacle
+bool avoiding = false; // for the robot, while in obstacle mode, to remember whether it is trying to scan left & right to avoid an obstacle (true) or if it is simply moving (false)
+int avoidDecision = NONE; // because the non-blocking code involves decision-making, we need to remember which action the robot has decided to do for later use
+int distance = -1; // remember the distance measurement as a global variable, because the robot does not re-read this value every time it executes the loop
+// a distance of -1 is an indicator that the robot has yet to measure the distance during the left-right scanning part of the obstacle avoidance code
+
+long loopTimer = 0; // for limiting the rate at which the see() function is repeated for stability, to around 40 repetitions per second
+long eventTimer = 0; // for delaying events in the various modes without blocking the code, because then the robot would not be able process a mode switch command during delays
+
+
+
+void move(int pwmBval, int pwmAval) { // shorten all the specific movement functions by storing the pin write commands inside this function
+  //this function takes arguments in this order: pwmB 8-bit value, pwmA 8-bit value. So the left argument are for the left motor, and the right argument is for the right motor.
+  analogWrite(pwmB, abs(pwmBval)*0.95);
+  if (pwmBval < 0) {digitalWrite(inB, 0);} // the direction of the each side is controlled by the sign on the corresponding pwm value. If it is negative, go backwards, otherwise go forwards.
+  else {digitalWrite(inB, 1);} // left motors direction
+  
+  analogWrite(pwmA, abs(pwmAval)*0.90); // slight reduction in the motor speeds in order to correct curved motion of the robot
+  if (pwmAval < 0) {digitalWrite(inA, 0);} 
+  else {digitalWrite(inA, 1);} // right motors direction
+  
+}
+
+void forward(int speed) {
+  move(speed, speed);
+}
+void backward(int speed) {
+  move(-speed, -speed);
+}
+void stop() {
+  move(0, 0);
+}
+void left(int speed) {
+  move(-speed, speed);
+}
+void leftForward(int speed) {
+  move(0, speed);
+}
+void leftBackward(int speed) {
+  move(0, -speed);
+}
+void right(int speed) {
+  move(speed, -speed);
+}
+void rightForward(int speed) {
+  move(speed, 0);
+}
+void rightBackward(int speed) {
+  move(-speed, 0);
+}
+
+
+
+void manualMode(int cmnd, long delt) { // function to control the robot in manual mode, based on the signals from an IR controller and the elapsed time between said signals.
+  if (delt > 150) { // if the time delta since the last button signal was pressed is too high, stop the robot.
+    stop();
+    rgbPixel.setPixelColor(0, rgbPixel.Color(128, 0, 0)); // indicate that the robot is stopped and waiting for a command to move
+  }
+  else { // if we have received a button press signal recently enough, move the robot and shine the neopixel based on which button signal was received
+    switch(cmnd) {
+      case 0x85:
+        forward(motorSpeed);
+        rgbPixel.setPixelColor(0, rgbPixel.Color(0, 128, 0));
+        break;
+
+      case 0x86:
+        backward(motorSpeed);
+        rgbPixel.setPixelColor(0, rgbPixel.Color(0, 128, 0));
+        break;
+
+      case 0x87:
+        left(motorSpeed);
+        rgbPixel.setPixelColor(0, rgbPixel.Color(0, 85, 0));
+        break;
+        
+      case 0x88:
+        right(motorSpeed);
+        rgbPixel.setPixelColor(0, rgbPixel.Color(0, 85, 0));
+        break;
+
+      case 0x0:
+        stop();
+        break;
+    }
+  }
+
+}
+
+void victoryLapMode() { // moves the robot with pre-determined instructions to perform a lap around a table
+  //
+  long currentT = millis();
+  long deltaT = currentT - eventTimer; // the time elapsed since the previous time reset, which happened when the mode was switched to victory lap mode
+
+  if (deltaT < 250) {forward(128);} // a series of chronological steps to perform based on how much time has elapsed since the lap mode was selected
+  else if (deltaT < 4250) {forward(255);}
+
+  else if (deltaT < 5000) {rightForward(128);}
+
+  else if (deltaT < 5250) {forward(128);}
+  else if (deltaT < 7750) {forward(255);}
+
+  else if (deltaT < 8550) {rightForward(100);} // halfway point
+
+  else if (deltaT < 8800) {forward(128);}
+  else if (deltaT < 12800) {forward(255);}
+
+  else if (deltaT < 13550) {rightForward(128);}
+
+  else if (deltaT < 13800) {forward(128);}
+  else if (deltaT < 16300) {forward(255);}
+
+  else {stop();} // if the total time of the whole movement process has elapsed, the robot will stop and await a new command.
+}
+
+void lineSearch() { // turn in different directions based on how long it has been since the line was last seen. This function is used by the line follow function to make things more readable.
+  long currentT = millis();
+  long deltaT = currentT - eventTimer; // the time elapsed since the previous time reset
+
+  if (deltaT > 4500) {eventTimer = currentT;} // update the previous time after a period of 4.5s, which restarts the whole sequence of searching movement
+  // if the robot engages search mode after having not engaged it for more than 4.5s, it will start the search sequence from the beginning.
+  // But if the robot engages search mode after having already engaged it within the last 4.5s, it will resume the search sequence based on how much time is left.
+  else if (deltaT > 4000) {stop();} // stop between 4s and 4.5s
+  else if (deltaT > 2100) {right(motorSpeed);} // right turn between 2.1s and 4s
+  else if (deltaT > 200) {left(motorSpeed/1.47);} // left turn between 0.2s and 2.1s
+  else {right(motorSpeed);} // at the very beginning of auto search, turn right
+}
+
+void lineFollowMode() { // attempts to follow a black line, and if there is none, spins around periodically in an attempt to find one
+  int leftRead = analogRead(leftPin);
+  int middleRead = analogRead(middlePin);
+  int rightRead = analogRead(rightPin);
+
+  if (leftRead>1000 || middleRead>1000 || rightRead>1000) { // prevent the robot from running off the table if any of the sensors reads no reflected light
+    stop();
+  }
+  else if (leftRead>600) { // when left value is high, but not too high, it meas that there is low right reflectance - we are looking at the black line
+    leftForward(motorSpeed/1.47);
+  }
+  else if (rightRead>600) {
+    rightForward(motorSpeed/1.47);
+  }
+  else if (middleRead>600) { // since we have passed the other if else statements, we already know that neither the left nor right sensors are over the black line
+    forward(motorSpeed/1.47); // and so, if the middle sensor only is on the black line, we are centered on the line, so go forward.
+  }
+  else {
+    lineSearch(); // if no line is seen, use a non-blocking function to periodically sweep around in search of a line
+  }
+}
+
+int see() { // use a function to store all the code for using the ultrasonic sensor, and return its distance measurement. This function will be called many times within the obstacle avoidance function.
+  long duration;
+  int dist;
+  // returns the trig pin to its LOW state, which is necessary to ready the sensor for action.
+  digitalWrite(trig, LOW);
+  delayMicroseconds(2);
+  // Sets the trigPin to HIGH state for 10 micro seconds, which emits a short ultrasonic pulse
+  digitalWrite(trig, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trig, LOW);
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  duration = pulseIn(echo, HIGH);
+  if (duration == 0) { // the pulseIn function will return 0 if it never gets back a pulse, which can happen if the sensor is too far away from am obstacle. To avoid this, we will change the value of the duration if we get a 0.
+    duration = 15000; // force the duration to be a value that yields 255 cm of distance. This will make the robot consider a pulse duration of 0 to mean no obstacle ahead.
+  }
+  // Calculating the distance in cm. Because sound travels as a constant speed through air, we can find the linear relationship between sound travel duration and the distance that the sound travelled.
+  dist = duration * 0.034 / 2; // we divide by 2 because the sound also has to return back to the sensor, but we only care about the duration from the sensor to the obstacle.
+  return dist;
+}
+
+void obstacleAvoidMode() { // the robot will move forward until it encounters an obstacle, then decide in which direction to turn away from the obstacle
+  long currentT = millis();
+  long deltaT = currentT - eventTimer; // the time elapsed since the previous time reset, which happens every time the robot detects an obstacle
+
+  // if there is an evasive decision that has been made, exit the program out of avoidance mode and carry out the evasive turning action
+  if (avoidDecision != NONE && avoidDecision != DECIDING) {
+    if (avoiding == true) { // if we just finished the part where the robot detected the distances left & right, reset the timer for a final robot turn before moving forward again
+      servo.write(80);
+      eventTimer = currentT;
+      deltaT = 0;
+      avoiding = false;
+    }
+    switch (avoidDecision) {
+      case LEFT:
+        left(95);
+        if (deltaT > 583) {avoidDecision = NONE;} // reset the decision, so that the robot goes back to driving forward
+        break;
+      case RIGHT:
+        right(95);
+        if (deltaT > 583) {avoidDecision = NONE;}
+        break;
+      case UTURN:
+        right(95);
+        if (deltaT > 1350) {avoidDecision = NONE;}
+        break;
+    }
+  }
+  // if the robot is not in avoiding mode nor is it performing the evasive turn, then it can safely move forward until it detects an obstacle again.
+  else if (avoiding == false && (currentT - loopTimer) >=25) {
+    // the constant distance detection while the robot is moving forward causes unpredictable behaviour, so we need to throttle back the rate at which the distance is detected
+    loopTimer = currentT;
+  
+    distance = see(); // this function is technically blocking, but the delay is normally so short (around 1ms per 18 cm, and a max of ~300ms if the pulseIn function times out) that it's not a big deal
+    if(distance < threshold) {
+      avoiding = true;
+      eventTimer = currentT; // update the event timer to the present time to prepare for the evasive actions, which will begin in the next if statement
+      deltaT = 0;
+    }
+    else {
+      servo.write(80);
+      forward(motorSpeed);
+    }
+
+  }
+  // this big condition is not an if-else statement, so that it may run on the same obstacleAvoidMode() execution as the previous big condition
+  if (avoiding == true) { // if the avoiding variable has been set to true, perform evasive actions, based on the time elapsed, until the robot has cleared the obstace
+    
+    if (deltaT < 250) {
+      stop(); // briefly stop the robot for the first 250ms
+      servo.write(80);
+    }
+
+    else if (deltaT < 750) {
+      servo.write(180); // look to the left, which is a higher angle
+      distance = -1; // this is to let the robot know on the first execution of the next chronological step that it has yet to measure the distance on the left side of the robot
+      avoidDecision = DECIDING;
+    }
+
+    else if (deltaT < 1250) { // during this chronological step, measure the left distance, and then if it is too short, turn the servo to the right
+      if (avoidDecision == DECIDING && distance == -1) {
+        distance = see();
+        if (distance >= threshold) {
+          avoidDecision = LEFT; // the next time the function activates, it will turn left before going back to moving forward
+          Serial.println("making a LEFT turn");
+        }
+        avoidDecision = NONE; // prevent the if statment from running again, because we have already decided to not turn left
+      }
+      else { // if the function managed to get to this point, it means that the distance on the left side was too low
+        servo.write(0); // now look to the right
+        distance = -1; // prepare the code for the next chronological step. We dont need to use the whole avoidDecision thing cause the next step is the last.
+        // if the avoidDecision variable needed to be used again, then another chronological step would be needed after this one just to re-set it to DECIDNG
+      }
+    }
+
+    else { // after 1.25s, in the last chronological step (which should only run once), measure the right distance, and make the final decision as to where to turn the robot
+      if (distance == -1) {
+        distance = see();
+        if (distance >= threshold) {
+          avoidDecision = RIGHT; // the next time the function activates, it will turn right before going back to moving forward
+          Serial.println("making a RIGHT turn");
+        }
+      }
+      else { // if the function managed to get to this point, it means that the distance on the right side was also too low, so do a u-turn
+        avoidDecision = UTURN;
+        Serial.println("making a U-turn");
+      }
+    }
+
+  }
+}
+
+
+
+void setup() {
+  pinMode(stby, OUTPUT);
+  pinMode(pwmA, OUTPUT);
+  pinMode(pwmB, OUTPUT);
+  pinMode(inA, OUTPUT);
+  pinMode(inB, OUTPUT);
+
+  pinMode(trig, OUTPUT);
+  pinMode(echo, INPUT);
+
+  digitalWrite(stby, 1);
+
+  servo.write(80); // once the program attaches the servo object, this will be its starting value
+
+  Serial.begin(115200);
+    while (!Serial)
+        ; // Wait for Serial to become available. Is optimized away for some cores.
+
+  IrReceiver.begin(9, ENABLE_LED_FEEDBACK); // begin the IR receiver and specify the IR pin as 9, and enable the feedback LED to blink when an IR signal is being received.
+
+  Serial.print(F("Ready to receive IR signals of protocols: "));
+  printActiveIRProtocols(&Serial);
+  Serial.println(F("at pin " STR(9)));
+
+  rgbPixel.begin(); // tell the neopixel library to initialize the pixel object, which was created at the top of the code.
+}
+
+
+
+void loop() {
+  rgbPixel.clear(); // sets the pixel to blank by default, but this may be overridden further down the code.
+
+  /*
+   * Check if received data is available and if yes, try to decode it.
+   * Decoded result is in the IrReceiver.decodedIRData structure.
+   * after it is decoded, use the data to switch the mode of the robot and control the robot's motor speed value, which is universal across modes.
+   */
+  if (IrReceiver.decode()) {
+    comm = IrReceiver.decodedIRData.command; // update the decoded command every time there is a new one
+    /*
+     * Print a summary of received data
+     */
+    if (IrReceiver.decodedIRData.protocol == UNKNOWN) {
+        //Serial.println(F("Received noise or an unknown (or not yet enabled) protocol"));
+        // We have an unknown protocol here, print extended info
+        //IrReceiver.printIRResultRawFormatted(&Serial, true);
+        IrReceiver.resume(); // Do it here, to preserve raw data for printing with printIRResultRawFormatted()
+    } else {
+        IrReceiver.resume(); // Early enable receiving of the next IR frame
+        IrReceiver.printIRResultShort(&Serial);
+        IrReceiver.printIRSendUsage(&Serial);
+        lastSignalTime = millis(); // if the signal received is of a known protocol, update the signal timer, so the robot knows to not timeout its movement
+    }
+    Serial.println();
+
+    /*
+     * Finally, check the received data and perform actions according to the received command
+     */
+    int oldMode = mode; // remember what the mode before the switch is executed is, in case it changes during said switch
+    switch (comm) { // switch for all the IR remote button input cases.
+      // cases for changing the mode of the robot
+      case 0x10:
+        servo.detach(); // detach the servo when going into modes that do not use it, so that it stops jittering and wasting energy
+        mode = MANUAL;
+
+        break;
+
+      case 0x11:
+        servo.detach();
+        mode = LAP;
+        break;
+
+      case 0x12:
+        servo.detach();
+        mode = LINE;
+        break;
+
+      case 0x13:
+        servo.attach(10);
+        avoiding = false;
+        avoidDecision = NONE;
+        mode = OBSTACLE;
+        break;
+
+      case 0x14:
+        //servo.attach(10);
+        //mode = LINE_OBSTACLE;
+        break;
+
+      case 0x51:
+        servo.detach();
+        mode = -1; // set the mode to an integer that was not assigned to any name by the enumeration, so it will send the robot into its default mode which is just stop.
+        break;
+
+      case 0x21: // case for decreasing the speed
+        if (millis() - speedDebounce >= 250) {
+          speedDebounce = millis(); // this code will only run if the last speed change happened more than 250ms earlier, to prevent spamming and make incrementing the speed easier.
+          motorSpeed -= 25;
+          if (motorSpeed<0) {motorSpeed = 0;} // create a lower limit for the motor speed
+        }
+        break;
+
+      case 0x20: // case for increasing the speed
+        if (millis() - speedDebounce >= 250) {
+          speedDebounce = millis();
+          motorSpeed += 25;
+          if (motorSpeed>250) {motorSpeed = 250;} // create an upper limit for the motor speed
+        }
+        break;
+
+      case 0x81:
+        motorSpeed = 125; // default speed
+        break;
+
+    }
+    if (oldMode != mode) {
+      eventTimer = millis(); // right after the switch, update the event timer if the mode value was changed, so that the robot's behaviour from the previous mode does not affect the new mode
+      oldMode = mode;
+    }
+  } // closing bracket for the "if (IrReceiver.decode())" statement
+
+  // this section of the code runs even if there is no signal received on this iteration of the loop
+
+  long signalTimeDelta = millis() - lastSignalTime;
+
+  if ((millis() - lastSignalTime < 150) && !(comm == 0x85 || comm == 0x86 || comm == 0x87 || comm == 0x88)) {
+    rgbPixel.setPixelColor(0, rgbPixel.Color(50, 50, 50)); // if a command was received that is not for manual mode movement, shine the neopixel white
+  }
+
+  // here is the switch that chooses which mode function to run based on the mode, which itself gets changed by another switch based on IR remote signals. 
+  switch (mode) {
+    case MANUAL:
+      manualMode(comm, signalTimeDelta);
+      break;
+
+    case LAP:
+      victoryLapMode();
+      break;
+
+    case LINE:
+      lineFollowMode();
+      break;
+
+    case OBSTACLE:
+      obstacleAvoidMode();
+      break;
+
+    case LINE_OBSTACLE:
+      //lineAndObstacleMode();
+      break;
+
+    default:
+      stop();
+  }
+  
+
+  rgbPixel.show();   // Send the updated pixel colors, which is just a virtual state, to the hardware, which is the physical neopixel.
+}
