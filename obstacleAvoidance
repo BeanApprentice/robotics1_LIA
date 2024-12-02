@@ -1,0 +1,167 @@
+/*
+  Use an ultrasonic sensor attached to a servo to make the robot navigate the world and avoid obstacles.
+  The ultrasonic sensor allows the robot to measure the distance in front of it by releasing an ultrasound
+  and measuring the time it takes for that sound to reflect back to the robot using the pulseIn function. The
+  servo is a special motor, controlled with the Servo library, which can point in specific directions, allowing the
+  robot to aim the ultrasonic sensor to the left and to the right in order to figure out which way to turn.
+*/
+
+#include <Servo.h>
+
+const int stby = 3;
+const int pwmA = 5; // right motor speed
+const int pwmB = 6; // left motor speed
+const int inA = 7;
+const int inB = 8;
+
+const int echo = 12; // ultrasonic sensor pins
+const int trig = 13;
+
+Servo servo; // create a servo object using the keyword "Servo" from the library.  
+
+const int speed = 128; // use a single variable to control all the movement function speeds, in case a change in overall speed is wanted.
+const int threshold = 30; // the minimum distance in cm before the robot considers itself to be detecting an obstacle
+
+void forward(int spd) {
+  analogWrite(pwmA, spd*0.92);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, spd*0.95);
+  digitalWrite(inB, 1);
+}
+
+void backward(int spd) {
+  analogWrite(pwmA, spd*0.92);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, spd*0.95);
+  digitalWrite(inB, 0);
+}
+
+void stop() {
+  analogWrite(pwmA, 0);
+  analogWrite(pwmB, 0);
+}
+
+void left(int spd) {
+  analogWrite(pwmA, spd);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, spd);
+  digitalWrite(inB, 0);
+}
+
+void leftForward(int spd) {
+  analogWrite(pwmA, spd);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, 0);
+  digitalWrite(inB, 1);
+}
+
+void leftBackward(int spd) {
+  analogWrite(pwmA, spd);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, 0);
+  digitalWrite(inB, 0);
+}
+
+void right(int spd) {
+  analogWrite(pwmA, spd);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, spd);
+  digitalWrite(inB, 1);
+}
+
+void rightForward(int spd) {
+  analogWrite(pwmA, 0);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, spd);
+  digitalWrite(inB, 1);
+}
+
+void rightBackward(int spd) {
+  analogWrite(pwmA, 0);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, spd);
+  digitalWrite(inB, 0);
+}
+
+int see() { // use a function to store all the code for using the ultrasonic sensor, and return its measurement. This helps make the code more readable, and reduces the amount of lines.
+  long duration;
+  int dist;
+  // returns the trig pin to its LOW state, which is necessary to ready the sensor for action.
+  digitalWrite(trig, LOW); // this line is not strictly necessary here because there is no other source in the code that could control the trig pin, but it's just good practice
+  delayMicroseconds(2);
+  // Sets the trigPin on HIGH state for 10 micro seconds, which emits a short ultrasonic pulse
+  digitalWrite(trig, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trig, LOW);
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  duration = pulseIn(echo, HIGH);
+  if (duration == 0) { // the pulseIn function will return 0 if it never gets back a pulse, which can happen if the sensor is too far away from am obstacle. To avoid this, we will change the value of the duration if we get a 0.
+    duration = 15000; // force the duration to be a value that yields 255 cm of distance. This will make the robot consider a pulse duration of 0 to mean no obstacle ahead.
+  }
+  // Calculating the distance in cm. Because sound travels as a constant speed through air, we can find the linear relationship between sound travel duration and the distance that the sound travelled.
+  dist = duration * 0.034 / 2; // we divide by 2 because the sound also has to return back to the sensor, but we only care about the duration from the sensor to the obstacle.
+  //Serial.println(dist);
+  return dist; // return the calculated value to wherever in the code that the function was called
+}
+
+void setup() {
+  pinMode(trig, OUTPUT);
+  pinMode(echo, INPUT);
+
+  pinMode(stby, OUTPUT);
+  pinMode(pwmA, OUTPUT);
+  pinMode(pwmB, OUTPUT);
+  pinMode(inA, OUTPUT);
+  pinMode(inB, OUTPUT);
+
+  digitalWrite(stby, 1); // dont forget to activate the motor driver by pulling up the standby pin
+
+  servo.attach(10);
+  servo.write(85); // the servo is slighty off, so 90 is not the forwrd direction
+  //Serial.begin(9600);
+}
+
+void loop() {
+  delay(25); // add a small delay for stability. For some reason, if there is less than around 10 ms delay, the car will become very unresponsive to changes in distance.
+  int distance = see();
+  //Serial.println(distance);
+  if (distance < threshold) { // if the distance in front of the sensor is below the threshold, there is an obstacle in front of the robot.
+    stop();
+    delay(250);
+
+    servo.write(180); // bigger angle means to the left // old angles: 140, 40
+    delay(500);
+
+    distance = see(); // update the distance now that the sensor is facing left
+    if(distance < threshold) { // if the distance on the left is also too small, we need to check right
+      servo.write(0);
+      delay(500);
+
+      distance = see(); // update the distance again now that the sensor is facing right
+      if (distance < threshold) { // if, for the third time, the distance is still too low, it means that the robot is surrounded on all sides and must turn around completely
+        servo.write(85);
+        delay(250);
+        
+        right(speed/1.5);
+        delay(1350);
+      }
+      else { // if the right distance is above our obstacle threshold, we can safely turn right
+        right(speed/1.5);
+        delay(333);
+
+        servo.write(85);
+        delay(250);
+      }
+    }
+    else { // if the distance on the left is above our obstacle threshold, we can safely turn left
+      left(speed/1.5);
+      delay(333);
+
+      servo.write(85); // make the sensor point straight again
+      delay(250);
+    }
+  }
+  else { // if the sensor is not detecting obstacle, just move forward
+    forward(speed);
+  }
+}
