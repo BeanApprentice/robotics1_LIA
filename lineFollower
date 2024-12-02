@@ -1,0 +1,132 @@
+/*
+Make use of a set of 3 reflected light sensors to detect a black line on a white surface, which allows
+the robot to follow said line around a track. The robot makes use of analogRead to get bit values from
+the analog input pins, and compares those readings against known bit value ranges to determine what color
+it is looking at. When the robot loses the line on all 3 sensors, it makes use of millis to perform a series
+of timed turning actions in an attempt to find the line, without blocking the rest of the code.
+*/
+
+/*
+  Light reflectance bit values (lower number means more reflected light):
+  table: around 40
+  black line: varies from around 600-750
+  off the table: above 1000
+*/
+
+const int rightPin = A0; // the three analog inputs connected to the reflected light sensors, which make up the line-tracking mechanism
+const int middlePin = A1;
+const int leftPin = A2;
+
+const int stby = 3;
+const int pwmA = 5; // right motor speed
+const int pwmB = 6; // left motor speed
+const int inA = 7;
+const int inB = 8;
+
+int prevT = 0; // for remembering the last time that the robot changed directions during its auto line search
+
+void forward(int speed) {
+  analogWrite(pwmA, speed*0.90);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, speed*0.95);
+  digitalWrite(inB, 1);
+}
+
+void backward(int speed) {
+  analogWrite(pwmA, speed*0.90);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, speed*0.95);
+  digitalWrite(inB, 0);
+}
+
+void stop() {
+  analogWrite(pwmA, 0);
+  analogWrite(pwmB, 0);
+}
+
+void left(int speed) {
+  analogWrite(pwmA, speed);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, speed);
+  digitalWrite(inB, 0);
+}
+
+void leftForward(int speed) {
+  analogWrite(pwmA, speed);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, 0);
+  digitalWrite(inB, 1);
+}
+
+void leftBackward(int speed) {
+  analogWrite(pwmA, speed);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, 0);
+  digitalWrite(inB, 0);
+}
+
+void right(int speed) {
+  analogWrite(pwmA, speed);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, speed);
+  digitalWrite(inB, 1);
+}
+
+void rightForward(int speed) {
+  analogWrite(pwmA, 0);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, speed);
+  digitalWrite(inB, 1);
+}
+
+void rightBackward(int speed) {
+  analogWrite(pwmA, 0);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, speed);
+  digitalWrite(inB, 0);
+}
+
+void setup() {
+  pinMode(stby, OUTPUT);
+  pinMode(pwmA, OUTPUT);
+  pinMode(pwmB, OUTPUT);
+  pinMode(inA, OUTPUT);
+  pinMode(inB, OUTPUT);
+
+  digitalWrite(stby, 1);
+}
+
+void searchMode() { // turn in different directions based on how long it has been since the line was last seen
+  int currentT = millis();
+  int deltaT = currentT - prevT; // the time elapsed since the previous time reset
+
+  if (deltaT > 4500) {prevT = currentT;} // update the previous time after a period of 4.5s, which restarts the whole sequence of searching movement
+  // if the robot engages search mode after having not engaged it for more than 4.5s, it will start the search sequence from the beginning.
+  // But if the robot engages search mode after having already engaged it within the last 4.5s, it will resume the search sequence based on the time remaining.
+  else if (deltaT > 4000) {stop();} // stop between 4s and 4.5s
+  else if (deltaT > 2100) {right(128);} // right turn between 2.1s and 4s
+  else if (deltaT > 200) {left(85);} // right turn between 0.2s and 2.1s
+  else {right(128);} // at the very beginning of auto search, turn right
+}
+
+void loop() {
+  int leftRead = analogRead(leftPin); // constantly re-scan the reflected light sensors
+  int middleRead = analogRead(middlePin);
+  int rightRead = analogRead(rightPin);
+
+  if (leftRead>1000 || middleRead>1000 || rightRead>1000) { // prevent the robot from running off the table if any of the sensors reads no reflected light
+    stop();
+  }
+  else if (leftRead>600) { // when left value is high, but not too high, it meas that there is low right reflectance - we are looking at black line
+    leftForward(85);
+  }
+  else if (rightRead>600) {
+    rightForward(85);
+  }
+  else if (middleRead>600) { // since we have passed the other if else statements, we already know that neither the left nor right sensors are over the black line
+    forward(85); // with that said, if the middle sensor only is on the black line, we are centered on the line, so go forward.
+  }
+  else {
+    searchMode(); // if no line is seen, use a non-blocking function to periodically sweep around in search of a line
+  }
+}
