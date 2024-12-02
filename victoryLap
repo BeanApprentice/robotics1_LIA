@@ -1,0 +1,116 @@
+/*
+  Moves the car in a set of pre-deterrmined motions in order to drive a lap around a table. Makes use of a
+  series of functions to control the direction of the robot in a more human-readable way.
+*/
+
+const int stby = 3;
+const int pwmA = 5; // right motor speed
+const int pwmB = 6; // left motor speed
+const int inA = 7; 
+const int inB = 8;
+
+void forward(int speed) { // for each movement function, input a speed value which will determine the PWM value of the right and left sides
+  analogWrite(pwmA, speed*0.90); // because the robot doesnt exactly go straight, manually tune the PWM of each side to make it move in a more linear path.
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, speed*0.95);
+  digitalWrite(inB, 1);
+}
+
+void backward(int speed) {
+  analogWrite(pwmA, speed*0.90);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, speed*0.95);
+  digitalWrite(inB, 0);
+}
+
+void stop() {
+  analogWrite(pwmA, 0);
+  analogWrite(pwmB, 0);
+}
+
+void left(int speed) {
+  analogWrite(pwmA, speed);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, speed);
+  digitalWrite(inB, 0);
+}
+
+void leftForward(int speed) {
+  analogWrite(pwmA, speed);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, 0);
+  digitalWrite(inB, 1);
+}
+
+void leftBackward(int speed) {
+  analogWrite(pwmA, speed);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, 0);
+  digitalWrite(inB, 0);
+}
+
+void right(int speed) {
+  analogWrite(pwmA, speed);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, speed);
+  digitalWrite(inB, 1);
+}
+
+void rightForward(int speed) {
+  analogWrite(pwmA, 0);
+  digitalWrite(inA, 1);
+  analogWrite(pwmB, speed);
+  digitalWrite(inB, 1);
+}
+
+void rightBackward(int speed) {
+  analogWrite(pwmA, 0);
+  digitalWrite(inA, 0);
+  analogWrite(pwmB, speed);
+  digitalWrite(inB, 0);
+}
+
+
+void setup() {
+  pinMode(stby, OUTPUT);
+  pinMode(pwmA, OUTPUT);
+  pinMode(pwmB, OUTPUT);
+  pinMode(inA, OUTPUT);
+  pinMode(inB, OUTPUT);
+
+  digitalWrite(stby, 1); // make sure to send a high signal to the standby pin on the motor driver, or it will not work.
+}
+
+void loop() {
+  
+  forward(128);
+  delay(250);
+  forward(255);
+  delay(4000); // all of these delays must be calibrated manually to ensure that the robot makes it around the table without crashing.
+
+  rightForward(128);
+  delay(750);
+
+  forward(128);
+  delay(250);
+  forward(255);
+  delay(2250);
+
+  rightForward(100);
+  delay(800); // halfway
+
+  forward(128);
+  delay(250);
+  forward(255);
+  delay(4000);
+
+  rightForward(128);
+  delay(750);
+
+  forward(128);
+  delay(250);
+  forward(255);
+  delay(2250);
+
+stop(); delay(3000); // delay a few seconds before repeating, so that the user has time to pick up the robot
+}
