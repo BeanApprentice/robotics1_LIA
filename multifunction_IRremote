@@ -299,17 +299,17 @@ void obstacleAvoidMode() { // the robot will move forward until it encounters an
 
     else if (deltaT < 1250) { // during this chronological step, measure the left distance, and then if it is too short, turn the servo to the right
       if (avoidDecision == DECIDING && distance == -1) {
+        avoidDecision = NONE; // prevent the if statment from running again, because we have already decided to not turn left
         distance = see();
         if (distance >= threshold) {
           avoidDecision = LEFT; // the next time the function activates, it will turn left before going back to moving forward
           Serial.println("making a LEFT turn");
         }
-        avoidDecision = NONE; // prevent the if statment from running again, because we have already decided to not turn left
-      }
-      else { // if the function managed to get to this point, it means that the distance on the left side was too low
-        servo.write(0); // now look to the right
-        distance = -1; // prepare the code for the next chronological step. We dont need to use the whole avoidDecision thing cause the next step is the last.
-        // if the avoidDecision variable needed to be used again, then another chronological step would be needed after this one just to re-set it to DECIDNG
+        else { // if the function managed to get to this point, it means that the distance on the left side was too low
+          servo.write(0); // now look to the right
+          distance = -1; // prepare the code for the next chronological step. We dont need to use the whole avoidDecision thing cause the next step is the last.
+          //// if the avoidDecision variable needed to be used again, then another chronological step would be needed after this one just to re-set it to DECIDNG
+        }
       }
     }
 
@@ -320,14 +320,14 @@ void obstacleAvoidMode() { // the robot will move forward until it encounters an
           avoidDecision = RIGHT; // the next time the function activates, it will turn right before going back to moving forward
           Serial.println("making a RIGHT turn");
         }
-      }
-      else { // if the function managed to get to this point, it means that the distance on the right side was also too low, so do a u-turn
-        avoidDecision = UTURN;
-        Serial.println("making a U-turn");
+        else { // if the function managed to get to this point, it means that the distance on the right side was also too low, so do a u-turn
+          avoidDecision = UTURN;
+          Serial.println("making a U-turn");
+        }
       }
     }
 
-  }
+  } // closing bracket for the "if (avoiding == true)" statement
 }
 
 
